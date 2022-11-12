@@ -30,9 +30,11 @@ low_income <- country_class %>%
 Show the table
 
 ```{r}
+summary(high_income)
 head(high_income, 10)
 ```
 ```{r}
+summary(low_income)
 head(low_income, 10)
 ```
 

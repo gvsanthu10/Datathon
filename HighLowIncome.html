@@ -358,7 +358,7 @@ display: none;
 <pre class="r"><code>install.packages(&quot;readxl&quot;, repos = &quot;http://cran.us.r-project.org&quot;)</code></pre>
 <pre><code>## 
 ## The downloaded binary packages are in
-##  /var/folders/sj/vdgjdxms3rndp5y290390lxh0000gn/T//RtmpybvIKI/downloaded_packages</code></pre>
+##  /var/folders/sj/vdgjdxms3rndp5y290390lxh0000gn/T//RtmppCFRhb/downloaded_packages</code></pre>
 <pre class="r"><code>library(readxl)
 library(tidyverse)</code></pre>
 <pre><code>## ── Attaching packages ─────────────────────────────────────── tidyverse 1.3.2 ──
@@ -380,6 +380,11 @@ low_income &lt;- country_class %&gt;%
   filter(`Income group` == &quot;Low income&quot;) %&gt;% 
   select(&quot;Economy&quot;, &quot;Code&quot;, &quot;Region&quot;)</code></pre>
 <p>Show the table</p>
+<pre class="r"><code>summary(high_income)</code></pre>
+<pre><code>##    Economy              Code              Region         
+##  Length:81          Length:81          Length:81         
+##  Class :character   Class :character   Class :character  
+##  Mode  :character   Mode  :character   Mode  :character</code></pre>
 <pre class="r"><code>head(high_income, 10)</code></pre>
 <pre><code>## # A tibble: 10 × 3
 ##    Economy              Code  Region                    
@@ -394,6 +399,11 @@ low_income &lt;- country_class %&gt;%
 ##  8 Bahrain              BHR   Middle East &amp; North Africa
 ##  9 Bahamas, The         BHS   Latin America &amp; Caribbean 
 ## 10 Bermuda              BMU   North America</code></pre>
+<pre class="r"><code>summary(low_income)</code></pre>
+<pre><code>##    Economy              Code              Region         
+##  Length:28          Length:28          Length:28         
+##  Class :character   Class :character   Class :character  
+##  Mode  :character   Mode  :character   Mode  :character</code></pre>
 <pre class="r"><code>head(low_income, 10)</code></pre>
 <pre><code>## # A tibble: 10 × 3
 ##    Economy                  Code  Region            
