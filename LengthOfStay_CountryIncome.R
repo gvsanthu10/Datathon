@@ -56,4 +56,5 @@ los_high_income %>% ggplot(aes(x = Year, y = Value, colour = Country)) +
   labs(title = "Average inpatient length of stay in high-income countries",
        x = "Year", y = "Length of stay (days)")
 # East Asia & Pacific Region seem to have the most variation. Zoom in.
-# Possible question: Why is there a large variation between Japan & NZ although both are high income countries?
+# Possible question: Why is there a large variation between Japan & NZ although both are high income countries in East Asia & Pacific?
+# Are there other variables that show the same pattern?  
