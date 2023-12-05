@@ -1,0 +1,472 @@
+---
+title: "Big data analytics - Final report"
+author: "B215284"
+date: "`r format(Sys.time(), '%d/%m/%y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\newpage
+
+# Introduction
+
+# Problem statement
+
+Breast cancer, the most common cancer in women, also has the highest cancer-related mortality rate. Recent advances in the treatment of breast cancer have improved survival rates.  The most common clinical question asked is prognosis and survival rates of the cancer.  The survival rates are also helpful to assess the advantages recent advances in the cancer treatment and efficacy of the policy making, screen and healthcare spending. 
+Current prognostication of breast cancer is typically based on the patient's clinical characteristics, tumor stage and histology, and treatment type. 
+Factoring in the genetic data, can we predict the survival outcomes more accurately?
+
+# The data: 
+
+### Source: Collected by a combined effort from researchers from the UK and Canada (Cancer Research UK, the British Columbia Cancer Foundation and Canadian Breast Cancer Foundation BC/Yukon). The data is hosted at cBioPortal. 
+
+### Contents: 
+
+    Information about around 1980 breast cancer patients 
+
+    the first 31 columns contain clinical details and survival information 
+
+    the next 331 columns contain m-RNA levels reflecting gene expression by the tumour. the values are standardised and entered as z scores. 
+
+    the next 175 columns contain information of gene mutations. 
+
+ 
+# Goal of the project: 
+
+The aim of this project is to develop a statistical model for prediction of survival outcome of a patient with given clinical and general sequencing information. 
+
+The data is explored with tables and graphs to arrive at initial impressions. The data is then prepared to model fitting by filling the missing values.  
+
+A logistic regression model is fitted into the data to predict the outcomes.  Theoretically, all the dependent variables could be fit into the model to assess the most important variable for fine tuning. as the dataset is large, selected few dependent variables are used for model fitting. 
+
+The model will be evaluated with metrics like accuracy, area under curve and True and false positive/negative rates.  
+
+
+### Installing packages
+
+```{r}
+list.of.packages <- c("sparklyr", "corrr", "dbplot", "reshape")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+```
+
+### Importing libraries
+
+```{r warning=FALSE, message=FALSE}
+library(sparklyr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(corrr)
+library(dbplot)
+library(reshape)
+```
+
+### Creating a spark connection
+
+The next block creates a spark connection to the master instance of the clusters. This Spark master node is responsible for delegating the computation to the executor nodes. 
+The data is imported as a spark table with the spark_read_csv function. The connection acts as an SQL database. The dplyr operation acts as SQL operations under the hood. 
+Most of the operations are carried out on the spark table. The data is imported as R tibble when absolutely necessary.
+
+
+```{r}
+sc <- spark_connect(master = "local")
+metabric_RNA_data <- spark_read_csv(sc, path = "./METABRIC_RNA_Mutation.csv")
+```
+## Data overview
+
+```{r}
+# number of rows
+count(metabric_RNA_data)
+```
+
+
+```{r}
+# number of columns
+ncol(metabric_RNA_data)
+```
+
+```{r}
+# glimpse of data. printing first 10 columns
+metabric_RNA_data %>% 
+  select(1:10) %>%  # select only first 10 columns
+  glimpse()
+```
+
+## Number of missing values
+
+```{r, warning=FALSE}
+missing_values <- metabric_RNA_data %>%
+  mutate_all(is.na) %>%   # convert all the values to 1 or 0 based on if they are NA or not
+  mutate_all(as.numeric) %>%    # convert them to numerical
+  summarise_all(sum) %>%   # sum of all the na (or 1s if they are na)
+  collect()  # concert to tibble
+
+transposed_data <- data.frame(t(missing_values),row.names = names(missing_values))   # transposing the tibble
+```
+```{r}
+transposed_data %>% head(10) %>% 
+  mutate(percentage = round(t.missing_values. / 1904 * 100, 2))
+```
+
+
+```{r}
+transposed_data %>% 
+  arrange(desc(t.missing_values.)) %>% # arranging them by descending order of missing values  
+  head(15) %>%  # print first 15 columns with most missing values
+  mutate(percentage = round(t.missing_values. / 1904 * 100, 2)) %>%
+  kable(col.names = c("Variable", "Count", "Percentage"), caption = "Summary of missing vaules")
+```
+
+The tumour stage, 3gene classification type and primary tumour laterality are the most common type of missing information. Rest of the columns have percentage of missing values less than 5%. 
+
+# Summary of survival outcomes
+
+```{r}
+metabric_RNA_data %>% 
+  group_by(overall_survival) %>% 
+  tally() %>% 
+  mutate(percentage = round(n / sum(n) * 100, 2)) %>% # creating a percentage column and rounding the values to 2 decimal places
+  kable(col.names = c("Survival", "Count", "Percentage"), caption = "Summary of Survival outcomes. (0 = deceased, 1 = survived)")
+```
+
+
+# Explorative data analysis 
+### Relationship between the clinical attributes and the outcome
+
+```{r}
+# Caching the clinical info in to a new spark table
+clinical_info <- metabric_RNA_data %>% 
+  select(1:31) %>% 
+  compute('clinical_info')
+```
+
+
+The caching is creating another spark data frame with memory across the cluster nodes. The cached data frame acts similar to the spark data frame with same connection.  
+
+## Correlation plot
+
+```{r, warning=FALSE}
+clinical_info %>% 
+  collect() %>%  # Converting to R tibble
+  select_if(is.numeric) %>%  # selecting only numerical columns. I tried to included all the variables, but hitting some errors
+  select(-patient_id, -overall_survival_months) %>%  # patient id is not relevant. survival month is one of the outcome, so not to be used to correlate with outcome
+  correlate(method = "pearson") %>% 
+  shave() %>%  # remove the half of the correlation matrix
+  rplot(shape = 19, colors = c("red", "green"), legend = TRUE) +
+  ggtitle("Correlation Plot of Clinical Variables") +  
+  labs(caption = "Variable of interst 'Overall_survival'",  
+       fill = "Correlation") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+The survival is negatively correlated with age at diagnosis, number of positive lymph nodes, Nottingham prognostic index, tumour size, and tumour stage.
+
+### Age 
+
+```{r}
+clinical_info %>%
+dbplot_histogram(age_at_diagnosis, binwidth = 5) +
+labs(title = "Age at diagnosis distribution",
+     subtitle = "Histogram of age")
+```
+The Dbplot is developed to plot spark data frames. The Dbplot operated directly with spark taking advantage of distributive computation. There is no need to collect the data for a plot which is in the case of ggplot.
+The above plot shows the average of the age is around 60s at the time of diagnosis with a slight neagtive skew.
+
+
+```{r, warning=FALSE}
+clinical_info %>%
+  select(age_at_diagnosis, overall_survival) %>%
+  collect() %>%
+  mutate(overall_survival = as.factor(overall_survival)) %>%
+  melt() %>% 
+  ggplot(aes(x=value, group=overall_survival, fill=overall_survival)) + 
+  geom_density(alpha=.25) +
+  labs(
+    title = "Density Plot of Age by Survival Outcome",
+    x = "Age at Diagnosis",
+    fill = "Survival Outcome \n0 = dead, 1=survived")
+```
+Age is an important predictor of survival in most of the medical conditions. Age affects the survival outcomes in various ways including clinical decision of offering radical treatment or with underlying co-morbidities.  
+
+The overlapping density plot conveys the same information in different visual. The range age range of these two groups appears same but the density plot of the deceased group is negatively skewed.  
+
+```{r}
+dbplot_raster(clinical_info, overall_survival_months, lymph_nodes_examined_positive, resolution = 60) +
+  labs(
+    title = "Scatter Plot of Overall Survival vs Lymph Nodes",
+    x = "Overall Survival Months",
+    y = "Lymph Nodes Examined Positive"
+  )
+```
+As the Dbplot uses a continuous stream of data to plot the graph, the data points are pixelated.
+The plot shows a slight negative correlation with survival outcomes.
+
+### Feature extration
+
+The below code creates a column showing proportion of the survived according tumor stage. Standard deviation for each is calculated. 
+
+```{r}
+prop_data <- clinical_info %>% 
+  group_by(tumor_stage, overall_survival) %>% 
+  tally() %>% 
+  group_by(tumor_stage) %>%
+  summarize(count = sum(n),
+            proportion_survived = sum(overall_survival * n) / sum(n)) %>%
+   mutate(se = sqrt(proportion_survived * (1 - proportion_survived) / count)) %>%
+  arrange(tumor_stage) %>% 
+  collect()
+
+prop_data
+```
+
+```{r}
+prop_data %>%
+  ggplot(aes(x = tumor_stage, y = proportion_survived)) + 
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = proportion_survived - 1.96 * se, 
+                    ymax = proportion_survived + 1.96 * se),
+                width = .1) +
+  geom_hline(yintercept = sum(prop_data$proportion_survived * prop_data$count) /
+                              sum(prop_data$count))
+```
+
+When tumour stages are plotted against the proportion of survival, a decrease in survival proportion with higher tumour stage is seen. The confidence interval is highest for stage 0 which is also crossing the average horizontal line indicating that when taken alone, stage 0 is not a good predictor of high or low survival rate than average. 
+
+
+```{r}
+scaled_clinical_info <- clinical_info %>% 
+  select_if(is.numeric) %>% 
+  select(-patient_id) %>% 
+  collect() %>% 
+  scale()
+```
+
+```{r, warning=FALSE}
+melt_data <- melt(scaled_clinical_info)
+```
+```{r, warning=FALSE}
+ggplot(melt_data, aes(factor(X2), value)) +
+  geom_boxplot() +
+  coord_flip()
+```
+
+Horizontal box plot of normalized values of clinical variables shows the mutation count, tumour size, number of positive lymph nodes carry high extreme values in positive side.  
+
+
+## mrna expression
+
+```{r}
+mrna_data <- metabric_RNA_data %>% 
+  select(25, 32:362) %>%
+  compute('mrna_data')
+```
+
+
+```{r}
+mrna_corr <- mrna_data %>% 
+  ml_corr() %>% 
+  slice(1) %>% 
+  collect()
+```
+
+```{r}
+ mrna_corr_arranged <- mrna_corr %>%
+  pivot_longer(cols = -overall_survival, names_to = "Variable", values_to = "Value") %>% 
+  select(-overall_survival) %>% 
+  arrange(desc(Value))
+```
+
+
+```{r}
+ mrna_corr %>%
+  pivot_longer(cols = -overall_survival, names_to = "Variable", values_to = "Value") %>% 
+  select(-overall_survival) %>% 
+  ggplot(aes(x=Value)) +
+  geom_histogram()
+```
+
+The plot shows most of the mRNA carry a weak correlation with survival outcomes ranging from 0.19 to –0.15. 
+
+
+```{r}
+mrna_corr_arranged %>% head(5)
+```
+
+```{r}
+mrna_corr_arranged %>% tail(5)
+```
+
+# Data cleaning
+
+The missing values can be handled as  
+
+    Dropping the rows with the missing values 
+
+    Dropping the column containing the missing values 
+
+    Replacing the missing values as new category as “missing value” as analysis 
+
+    Impute the values with mean, mode or advanced algorithms like K-nearest neighbour (KNN) imputation 
+    
+
+Due to limited computational resources and time for model fitting, a selected number of variables are chosen for model fitting. 
+1. Age, number of postive lymph nodes, nottigam grade, tumor size. tumpr stage is dropped due to high number of missing vaules
+2. various types of treatments. It should be noted that correlation may not be causation with regards to treatment and outcome
+3. Most postively correlated and most negatively correlated gene expression
+
+
+
+~~~~~~~##################################################################################################################################################
+
+1. Imputing type of surgery with most common type of surgery
+2. Imputing the tumor size with mean tumor size
+
+Rest of the varibles do not have missing values
+
+```{r}
+metabric_RNA_data %>% 
+  count(type_of_breast_surgery)
+```
+
+```{r}
+metabric_RNA_data %>% 
+  summarise(mean_size = mean(tumor_size))
+```
+Imputation
+
+
+```{r}
+metabric_RNA_data <- metabric_RNA_data %>% 
+  mutate(tumor_size = ifelse(is.na(tumor_size), 26.23, tumor_size)) %>% 
+  mutate(type_of_breast_surgery = ifelse(is.na(type_of_breast_surgery), "MASTECTOMY", type_of_breast_surgery))
+```
+
+# Creating a table containing only columns of intrest
+
+```{r}
+metabric_reduced <- metabric_RNA_data %>% 
+  select(overall_survival, age_at_diagnosis, lymph_nodes_examined_positive, nottingham_prognostic_index,tumor_size, 
+         type_of_breast_surgery, hormone_therapy, chemotherapy, radio_therapy, jak1, pdgfb) %>% 
+  mutate(surgery_mastectomy = ifelse(type_of_breast_surgery == "MASTECTOMY", 1, 0)) %>% 
+  select(-type_of_breast_surgery)
+```
+
+```{r}
+metabric_reduced %>% glimpse()
+```
+```{r}
+gen_linear_model <- ml_generalized_linear_regression(metabric_reduced, 
+                                       overall_survival ~ age_at_diagnosis + lymph_nodes_examined_positive + nottingham_prognostic_index + surgery_mastectomy + hormone_therapy + chemotherapy + radio_therapy + jak1 + pdgfb,
+                                       family = "binomial")
+
+gen_linear_model <- tidy(gen_linear_model)
+```
+
+
+```{r}
+# metabric_RNA_data <- metabric_RNA_data %>% 
+#   select(-patient_id, -tumor_stage, -'3gene_classifier_subtype', -primary_tumor_laterality, -overall_survival_months) %>% 
+#   mutate(neoplasm_histologic_grade = ifelse(is.na(neoplasm_histologic_grade), "missing", neoplasm_histologic_grade)) %>%
+#   mutate(cellularity = ifelse(is.na(cellularity), "missing", cellularity)) %>%
+#   mutate(mutation_count = ifelse(is.na(mutation_count), "missing", mutation_count)) %>%
+#   mutate(er_status_measured_by_ihc = ifelse(is.na(er_status_measured_by_ihc), "missing", er_status_measured_by_ihc)) %>%
+#   mutate(type_of_breast_surgery = ifelse(is.na(type_of_breast_surgery), "missing", type_of_breast_surgery)) %>%
+#   mutate(tumor_size = ifelse(is.na(tumor_size), "missing", tumor_size)) %>%
+#   mutate(cancer_type_detailed = ifelse(is.na(cancer_type_detailed), "missing", cancer_type_detailed)) %>%
+#   mutate(tumor_other_histologic_subtype = ifelse(is.na(tumor_other_histologic_subtype), "missing", tumor_other_histologic_subtype)) %>%
+#   mutate(oncotree_code = ifelse(is.na(oncotree_code), "missing", oncotree_code)) %>%
+#   mutate(death_from_cancer = ifelse(is.na(death_from_cancer), "missing", death_from_cancer))
+```
+
+```{r}
+
+# metabric_RNA_data %>% distinct(type_of_breast_surgery) to get unique values of 
+
+# metabric_RNA_data_reduced <- metabric_RNA_data %>%
+#   select(overall_survival, age_at_diagnosis, lymph_nodes_examined_positive, nottingham_prognostic_index, jak1, pdgfb, type_of_breast_surgery) %>% 
+#   mutate(type_of_breast_surgery = ifelse(is.na(type_of_breast_surgery), "missing", type_of_breast_surgery)) %>% 
+#   mutate(surgery_mastectomy = ifelse(type_of_breast_surgery == "MASTECTOMY", 1, 0),
+#          surgery_bcs = ifelse(type_of_breast_surgery == "BREAST CONSERVING", 1, 0),
+#          surgery_missing = ifelse(type_of_breast_surgery == "missing", 1, 0),)
+# ```
+# ```{r}
+# metabric_RNA_data_reduced %>% glimpse()
+```
+
+
+# model fitting
+
+```{r}
+# linear_model <- ml_logistic_regression(
+#   metabric_RNA_data_reduced, overall_survival ~ age_at_diagnosis + lymph_nodes_examined_positive + nottingham_prognostic_index + jak1 + pdgfb + surgery_mastectomy + surgery_bcs + surgery_missing,
+#   fit_intercept = FALSE)
+# linear_model
+```
+
+
+
+```{r}
+# validation_summary <- ml_evaluate(linear_model, metabric_RNA_data_reduced)
+```
+
+```{r}
+# validation_summary
+# ```
+# ```{r}
+# roc <- validation_summary$roc() %>%
+#   collect()
+# 
+# ggplot(roc, aes(x = FPR, y = TPR)) +
+#   geom_line() + geom_abline(lty = "dashed")
+```
+
+```{r}
+# gen_linear_model <- ml_generalized_linear_regression(
+#   metabric_RNA_data_reduced, 
+#   overall_survival ~ age_at_diagnosis + lymph_nodes_examined_positive + nottingham_prognostic_index + jak1 + pdgfb,
+#   family = "binomial"
+# )
+# 
+# gen_linear_model <- tidy(gen_linear_model)
+```
+
+
+
+```{r}
+gen_linear_model %>%
+  slice_tail(n=-1) %>%
+  ggplot(aes(x = term, y = estimate)) +
+  geom_point() +
+  geom_errorbar(
+    aes(ymin = estimate - 1.96 * std.error,
+       ymax = estimate + 1.96 * std.error, width = .1)
+  ) +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed")
+```
+
+
+
+
+```{r}
+spark_disconnect(sc)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
